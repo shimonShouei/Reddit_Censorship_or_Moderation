@@ -73,7 +73,6 @@ class data_downloader:
 
     async def __handle_single_submission(self, sub, kind, _post_or_comment, pbar_):
         s_time = time.time()
-        # try:
         if '_reddit' in sub.keys():
             del sub["_reddit"]
         if 'subreddit' in sub.keys():
@@ -84,41 +83,40 @@ class data_downloader:
             sub['poll_data'] = str(sub['poll_data'])
         self.convert_time_format(sub)
         post_id = sub["id"]
-        if kind == "reddit_api":
-            if post_id in self.__curr_tmp_chunk:
-                for k in self.__curr_tmp_chunk[post_id]["pushift_api"].copy():
-                    if k in sub:
-                        if sub[k] == self.__curr_tmp_chunk[post_id]["pushift_api"][k]:
-                            del self.__curr_tmp_chunk[post_id]["pushift_api"][k]
+        async with asyncio.Lock():
+            if kind == "reddit_api":
+                if post_id in self.__curr_tmp_chunk:
+                    for k in self.__curr_tmp_chunk[post_id]["pushift_api"].copy():
+                        if k in sub:
+                            if sub[k] == self.__curr_tmp_chunk[post_id]["pushift_api"][k]:
+                                del self.__curr_tmp_chunk[post_id]["pushift_api"][k]
+                else:
+                    self.__curr_tmp_chunk[post_id] = {}
+                    self.__curr_tmp_chunk[post_id]["post_id"] = post_id
+                sub = dict(sorted(sub.items(), key=lambda item: item[0]))
+                e_time = time.time()
+                self.__times_praw[0] += (e_time - s_time)
+                self.__times_praw[1] += 1
             else:
-                self.__curr_tmp_chunk[post_id] = {}
-                self.__curr_tmp_chunk[post_id]["post_id"] = post_id
-            sub = dict(sorted(sub.items(), key=lambda item: item[0]))
+                if post_id in self.__curr_tmp_chunk:
+                    for k in sub.copy():
+                        if k in self.__curr_tmp_chunk[post_id]["reddit_api"]:
+                            if sub[k] == self.__curr_tmp_chunk[post_id]["reddit_api"][k]:
+                                del sub[k]
+                else:
+                    self.__curr_tmp_chunk[post_id] = {}
+                    self.__curr_tmp_chunk[post_id]["post_id"] = post_id
+                e_time = time.time()
+                self.__times_psaw[0] += (e_time - s_time)
+                self.__times_psaw[1] += 1
             self.__curr_tmp_chunk[post_id][kind] = sub
-            e_time = time.time()
-            self.__times_praw[0] += (e_time - s_time)
-            self.__times_praw[1] += 1
-        else:
-            if post_id in self.__curr_tmp_chunk:
-                for k in sub.copy():
-                    if k in self.__curr_tmp_chunk[post_id]["reddit_api"]:
-                        if sub[k] == self.__curr_tmp_chunk[post_id]["reddit_api"][k]:
-                            del sub[k]
-            else:
-                self.__curr_tmp_chunk[post_id] = {}
-                self.__curr_tmp_chunk[post_id]["post_id"] = post_id
-            self.__curr_tmp_chunk[post_id][kind] = sub
-            e_time = time.time()
-            self.__times_psaw[0] += (e_time - s_time)
-            self.__times_psaw[1] += 1
         if len(self.__curr_tmp_chunk[post_id]) == 3:
             status = self.define_status(self.__curr_tmp_chunk[post_id])
             self.__curr_tmp_chunk[post_id]['status'] = status
             self.__curr_chunk[post_id] = self.__curr_tmp_chunk[post_id].copy()
             del self.__curr_tmp_chunk[post_id]
             self.__chunk_counter -= 1
-        pbar_.update(1)
-
+            pbar_.update(1)
         if self.__chunk_counter <= 0:
             self.__chunk_counter = self.__chunk_size
             start_time_dump = time.time()
@@ -130,25 +128,16 @@ class data_downloader:
         await self.data_layer.insert_many(data=self.__curr_chunk.values())
         self.__curr_chunk = {}
 
-    async def __handle_submissions(self, submissions_list, _post_or_comment, api_kind):
-        with tqdm(total=len(submissions_list)) as pbar:
-            await asyncio.gather(
-                *[self.__handle_single_submission(submission, api_kind, _post_or_comment, pbar) for submission in
-                  submissions_list])
-
-
     async def __download(self, d, m, year, sub_kind, subreddit_name, last_day_of_month, run_type='m'):
         start_time = int(datetime.datetime(year, m, d, 0, 0).timestamp())
         if start_time > int(datetime.datetime.now().timestamp()):
             return
+        logging.info(f"start date:{d}/{m}/{year}")
         if run_type == "m":
             d = last_day_of_month
         end_time = int(datetime.datetime(year, m, d, 23, 59).timestamp())
-        logging.info(f"start date:{d}/{m}/{year}")
         submissions_list_pushift = []
         submissions_list_reddit = []
-        start_run_time = time.time()
-        # loop = asyncio.get_event_loop()
         try:
             submissions_list_pushift = self.__download_funcs_dict.get(sub_kind)(subreddit=subreddit_name,
                                                                      after=start_time,
@@ -159,12 +148,13 @@ class data_downloader:
                                                                      before=end_time)
             await self.__change_reddit_mode(),
             end_run_time = time.time()
-            await asyncio.gather(
-            self.__handle_submissions(submissions_list_pushift, sub_kind, "pushift_api"),
-            # logging.info("Extract from pushift time: {}".format(end_run_time - start_run_time))
-            
-            self.__handle_submissions(submissions_list_reddit, sub_kind, "reddit_api")
-            )
+            with tqdm(total=len(submissions_list_reddit)+len(submissions_list_pushift)) as pbar:
+                await asyncio.gather(
+                    *[self.__handle_single_submission(submission, "pushift_api", sub_kind, pbar) for submission in
+                    submissions_list_pushift],
+                    *[self.__handle_single_submission(submission, "reddit_api", sub_kind, pbar) for submission in
+                    submissions_list_reddit],
+                )
             # logging.info("Extract from reddit time: {}".format(time.time() - end_run_time))
         except ChunkedEncodingError as e:
             logging.warn(f"Error at {d}/{m}/{year}")
@@ -203,8 +193,6 @@ class data_downloader:
                         d_step = last_day_of_month
                 loop.run_until_complete(asyncio.gather(*[self.__download(d=d, m=m, sub_kind=sub_kind, subreddit_name=subreddit_name, year=year, last_day_of_month=last_day_of_month, run_type=run_type)
                                                          for d in range(first_day, last_day_of_month + 1, d_step)]))
-                # for d in range(first_day, last_day_of_month + 1, d_step):
-                #     loop = self.__download(d=d, m=m, sub_kind=sub_kind, subreddit_name=subreddit_name, year=year, last_day_of_month=last_day_of_month, run_type=run_type)
             # empty chunk
             if len(self.__curr_chunk) > 0:
                 s_time_dump = time.time()
