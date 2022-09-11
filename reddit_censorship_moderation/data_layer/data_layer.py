@@ -1,3 +1,4 @@
+import datetime
 import os
 
 import pymongo
@@ -76,6 +77,9 @@ class DataLayer:
             # reddit_api selftext")
             sub_submission = submission["reddit_api"]
         return sub_submission[selftext]
-
+       
+    def get_collection(self, year, collection_name, submission_kind):
+        pass
+    
     def insert_many(self):
         pass

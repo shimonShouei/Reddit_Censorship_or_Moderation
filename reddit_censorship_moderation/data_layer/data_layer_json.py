@@ -9,4 +9,4 @@ logging.basicConfig(format='%(asctime)s %(message)s')
 
 class JsonDataLayer(DataLayer):
     def __init__(self):
-        super(JsonDataLayer, self).__init__()
+        super().__init__()

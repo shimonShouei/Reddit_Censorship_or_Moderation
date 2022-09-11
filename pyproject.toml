@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "Reddit-Censorship-Moderation"
+name = "Reddit_Censorship_Moderation"
 version = "0.1.0"
 description = ""
 authors = ["Dima Kagan <dimakagan15@gmail.com>"]
